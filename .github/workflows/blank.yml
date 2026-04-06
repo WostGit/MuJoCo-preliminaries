@@ -1,4 +1,4 @@
-name: MLX / MuJoCo preliminaries (ultra verbose with fallback)
+name: MLX / MuJoCo preliminaries with benchmarks and fallback
 
 on:
   push:
@@ -37,14 +37,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p .ci-logs
-          echo "Created .ci-logs"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Print high-level workflow context
+      - name: Print workflow context
         shell: bash
         run: |
           set -euxo pipefail
@@ -68,7 +67,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           {
             echo "=== BASIC SYSTEM INFO ==="
             uname -a || true
@@ -96,7 +94,6 @@ jobs:
           import os
           import platform
           import sys
-
           print("platform.platform() =", platform.platform())
           print("platform.machine()  =", platform.machine())
           print("platform.processor()=", platform.processor())
@@ -133,31 +130,24 @@ jobs:
           import platform
           import subprocess
           import sys
-
           errors = []
-
           machine = platform.machine().lower()
           if machine not in ("arm64", "aarch64"):
               errors.append(f"Expected Apple Silicon arm64, got {machine}")
-
           version = subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip()
           major = int(version.split(".")[0])
           if major < 14:
               errors.append(f"Expected macOS 14+, got {version}")
-
           if sys.version_info < (3, 10):
               errors.append(f"Expected Python 3.10+, got {sys.version}")
-
           print("machine:", machine)
           print("macOS:", version)
           print("python:", sys.version)
-
           if errors:
               print("Platform constraint failures:")
               for item in errors:
                   print("-", item)
               raise SystemExit(1)
-
           print("All platform constraints passed.")
           PY
 
@@ -217,23 +207,17 @@ jobs:
           python - <<'PY' | tee .ci-logs/import-sanity.txt
           import sys
           import platform
-
           print("=== IMPORT SANITY ===")
           print("Python:", sys.version)
           print("Machine:", platform.machine())
-
           import numpy as np
           print("NumPy version:", np.__version__)
-
           import scipy
           print("SciPy version:", scipy.__version__)
-
           import mujoco
           print("MuJoCo version:", mujoco.__version__)
-
           import mlx.core as mx
           print("MLX imported successfully")
-
           print("All required imports passed.")
           PY
 
@@ -244,21 +228,18 @@ jobs:
           python - <<'PY' | tee .ci-logs/mlx-probe.txt
           import mlx.core as mx
           import numpy as np
-
           print("=== MLX PROBE ===")
           a = mx.array([1.0, 2.0, 3.0])
           b = mx.array([4.0, 5.0, 6.0])
           c = a + b
           mx.eval(c)
           print("Vector add result:", np.array(c))
-
           m1 = mx.arange(16, dtype=mx.float32).reshape(4, 4)
           m2 = mx.arange(16, dtype=mx.float32).reshape(4, 4)
           mm = m1 @ m2
           mx.eval(mm)
           print("Matmul result shape:", mm.shape)
           print("Matmul sample:", np.array(mm))
-
           print("MLX probe complete.")
           PY
 
@@ -269,22 +250,58 @@ jobs:
           python - <<'PY' | tee .ci-logs/mlx-compute-smoke.txt
           import time
           import mlx.core as mx
-
           print("=== MLX COMPUTE SMOKE TEST ===")
           n = 2048
           print(f"Building matrices of shape ({n}, {n})")
-
           a = mx.random.normal((n, n))
           b = mx.random.normal((n, n))
-
           t0 = time.time()
           c = a @ b
           mx.eval(c)
           t1 = time.time()
-
           print("Computation finished successfully")
           print("Output shape:", c.shape)
           print("Elapsed seconds:", round(t1 - t0, 6))
+          PY
+
+      - name: MLX repeated benchmark with threshold
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mlx-benchmark.txt
+          import json
+          import statistics
+          import time
+          import mlx.core as mx
+          print("=== MLX REPEATED BENCHMARK ===")
+          n = 2048
+          runs = []
+          a = mx.random.normal((n, n))
+          b = mx.random.normal((n, n))
+          warm = a @ b
+          mx.eval(warm)
+          for i in range(5):
+              t0 = time.time()
+              c = a @ b
+              mx.eval(c)
+              t1 = time.time()
+              dt = t1 - t0
+              runs.append(dt)
+              print(f"run_{i+1}_sec={dt:.6f}")
+          report = {
+              "shape": [n, n],
+              "runs_sec": runs,
+              "min_sec": min(runs),
+              "max_sec": max(runs),
+              "avg_sec": statistics.mean(runs),
+              "median_sec": statistics.median(runs),
+          }
+          print(json.dumps(report, indent=2))
+          with open(".ci-logs/mlx-benchmark.json", "w", encoding="utf-8") as f:
+              json.dump(report, f, indent=2)
+          threshold_sec = 1.5
+          if report["avg_sec"] > threshold_sec:
+              raise SystemExit(f"MLX benchmark average too slow: {report['avg_sec']:.6f}s > {threshold_sec:.6f}s")
           PY
 
       - name: NumPy and SciPy numeric sanity test
@@ -294,7 +311,6 @@ jobs:
           python - <<'PY' | tee .ci-logs/scipy-numpy-sanity.txt
           import numpy as np
           from scipy.linalg import svd
-
           print("=== NUMPY / SCIPY SANITY ===")
           x = np.array([[1.0, 2.0], [3.0, 4.0]])
           u, s, vt = svd(x)
@@ -311,7 +327,6 @@ jobs:
           set -euxo pipefail
           python - <<'PY' | tee .ci-logs/mujoco-xml-smoke.txt
           import mujoco
-
           print("=== MUJOCO XML PARSE TEST ===")
           xml = """
           <mujoco>
@@ -324,10 +339,8 @@ jobs:
             </worldbody>
           </mujoco>
           """
-
           model = mujoco.MjModel.from_xml_string(xml)
           data = mujoco.MjData(model)
-
           print("Model nq:", model.nq)
           print("Model nv:", model.nv)
           print("Initial time:", data.time)
@@ -340,7 +353,6 @@ jobs:
           set -euxo pipefail
           python - <<'PY' | tee .ci-logs/mujoco-step-smoke.txt
           import mujoco
-
           print("=== MUJOCO STEP TEST ===")
           xml = """
           <mujoco>
@@ -354,30 +366,121 @@ jobs:
             </worldbody>
           </mujoco>
           """
-
           model = mujoco.MjModel.from_xml_string(xml)
           data = mujoco.MjData(model)
-
-          for i in range(100):
+          for _ in range(100):
               mujoco.mj_step(model, data)
-
           print("Stepping complete.")
           print("Simulation time:", data.time)
           print("Final qpos:", data.qpos)
           print("MuJoCo stepping smoke test passed.")
           PY
 
+      - name: MuJoCo repeated stepping benchmark
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mujoco-benchmark.txt
+          import json
+          import time
+          import mujoco
+          print("=== MUJOCO REPEATED STEPPING BENCHMARK ===")
+          xml = """
+          <mujoco>
+            <option timestep="0.002"/>
+            <worldbody>
+              <geom type="plane" size="2 2 0.1"/>
+              <body name="box" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """
+          model = mujoco.MjModel.from_xml_string(xml)
+          data = mujoco.MjData(model)
+          num_steps = 10000
+          t0 = time.time()
+          for _ in range(num_steps):
+              mujoco.mj_step(model, data)
+          t1 = time.time()
+          elapsed = t1 - t0
+          steps_per_sec = num_steps / elapsed
+          report = {
+              "num_steps": num_steps,
+              "elapsed_sec": elapsed,
+              "steps_per_sec": steps_per_sec,
+              "final_sim_time": data.time,
+          }
+          print(json.dumps(report, indent=2))
+          with open(".ci-logs/mujoco-benchmark.json", "w", encoding="utf-8") as f:
+              json.dump(report, f, indent=2)
+          PY
+
+      - name: Build consolidated benchmark summary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          mlx_path = Path(".ci-logs/mlx-benchmark.json")
+          mujoco_path = Path(".ci-logs/mujoco-benchmark.json")
+          summary_path = Path(".ci-logs/summary.md")
+          mlx = {}
+          mujoco = {}
+          if mlx_path.exists():
+              with mlx_path.open("r", encoding="utf-8") as f:
+                  mlx = json.load(f)
+          if mujoco_path.exists():
+              with mujoco_path.open("r", encoding="utf-8") as f:
+                  mujoco = json.load(f)
+          lines = []
+          lines.append("# Benchmark Summary")
+          lines.append("")
+          lines.append("## MLX")
+          if mlx:
+              lines.append(f"- Shape: {mlx.get('shape')}")
+              lines.append(f"- Min: {mlx.get('min_sec'):.6f} sec")
+              lines.append(f"- Median: {mlx.get('median_sec'):.6f} sec")
+              lines.append(f"- Avg: {mlx.get('avg_sec'):.6f} sec")
+              lines.append(f"- Max: {mlx.get('max_sec'):.6f} sec")
+          else:
+              lines.append("- No MLX benchmark JSON found")
+          lines.append("")
+          lines.append("## MuJoCo")
+          if mujoco:
+              lines.append(f"- Steps: {mujoco.get('num_steps')}")
+              lines.append(f"- Elapsed: {mujoco.get('elapsed_sec'):.6f} sec")
+              lines.append(f"- Steps/sec: {mujoco.get('steps_per_sec'):.2f}")
+              lines.append(f"- Final sim time: {mujoco.get('final_sim_time')}")
+          else:
+              lines.append("- No MuJoCo benchmark JSON found")
+          lines.append("")
+          text = "\n".join(lines)
+          summary_path.write_text(text, encoding="utf-8")
+          print(text)
+          PY
+
+      - name: Publish benchmark summary to job summary
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat .ci-logs/summary.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Write success summary
         if: success()
         shell: bash
         run: |
           {
+            echo
             echo "## Primary macOS job succeeded"
             echo
             echo "- Runner: macOS 14"
             echo "- Architecture: Apple Silicon ARM64"
             echo "- Python: ${{ matrix.python-version }}"
-            echo "- Checks passed: platform, imports, MLX smoke test, NumPy/SciPy sanity, MuJoCo smoke tests"
+            echo "- Checks passed: platform, imports, MLX smoke test, MLX repeated benchmark, NumPy/SciPy sanity, MuJoCo smoke tests, MuJoCo benchmark"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Write failure summary
@@ -395,7 +498,11 @@ jobs:
             echo "- .ci-logs/install-mlx-fallback.txt"
             echo "- .ci-logs/import-sanity.txt"
             echo "- .ci-logs/mlx-compute-smoke.txt"
+            echo "- .ci-logs/mlx-benchmark.txt"
+            echo "- .ci-logs/mlx-benchmark.json"
             echo "- .ci-logs/mujoco-step-smoke.txt"
+            echo "- .ci-logs/mujoco-benchmark.txt"
+            echo "- .ci-logs/mujoco-benchmark.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload primary logs
@@ -469,54 +576,11 @@ jobs:
           import numpy as np
           import scipy
           import mujoco
-
           print("Python:", sys.version)
           print("NumPy version:", np.__version__)
           print("SciPy version:", scipy.__version__)
           print("MuJoCo version:", mujoco.__version__)
           print("Portable dependency import sanity passed.")
-          PY
-
-      - name: MLX benchmark with repeated runs
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python - <<'PY' | tee .ci-logs/mlx-benchmark.txt
-          import time
-          import json
-          import statistics
-          import mlx.core as mx
-
-          n = 2048
-          a = mx.random.normal((n, n))
-          b = mx.random.normal((n, n))
-
-          warm = a @ b
-          mx.eval(warm)
-
-          times = []
-          for _ in range(5):
-              t0 = time.time()
-              c = a @ b
-              mx.eval(c)
-              t1 = time.time()
-              times.append(t1 - t0)
-
-          report = {
-              "shape": [n, n],
-              "runs": times,
-              "min_sec": min(times),
-              "max_sec": max(times),
-              "avg_sec": statistics.mean(times),
-          }
-
-          print(json.dumps(report, indent=2))
-
-          with open(".ci-logs/mlx-benchmark.json", "w") as f:
-              json.dump(report, f, indent=2)
-
-          if report["avg_sec"] > 1.5:
-              raise SystemExit(f"MLX benchmark slower than expected: {report['avg_sec']:.4f}s")
           PY
 
       - name: Attempt MLX install on Ubuntu as expected-negative diagnostic
