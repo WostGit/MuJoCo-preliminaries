@@ -68,6 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           {
             echo "=== BASIC SYSTEM INFO ==="
             uname -a || true
@@ -89,20 +90,24 @@ jobs:
             python -m pip --version || true
             echo
             echo "=== PLATFORM DETAILS ==="
-            python - <<'PY'
-            import os
-            import platform
-            import sys
+          } | tee .ci-logs/system-info.txt
 
-            print("platform.platform() =", platform.platform())
-            print("platform.machine()  =", platform.machine())
-            print("platform.processor()=", platform.processor())
-            print("platform.system()   =", platform.system())
-            print("platform.release()  =", platform.release())
-            print("sys.version         =", sys.version)
-            print("sys.executable      =", sys.executable)
-            print("cwd                 =", os.getcwd())
-            PY
+          python - <<'PY' | tee -a .ci-logs/system-info.txt
+          import os
+          import platform
+          import sys
+
+          print("platform.platform() =", platform.platform())
+          print("platform.machine()  =", platform.machine())
+          print("platform.processor()=", platform.processor())
+          print("platform.system()   =", platform.system())
+          print("platform.release()  =", platform.release())
+          print("sys.version         =", sys.version)
+          print("sys.executable      =", sys.executable)
+          print("cwd                 =", os.getcwd())
+          PY
+
+          {
             echo
             echo "=== HARDWARE INFO ==="
             system_profiler SPHardwareDataType || true
@@ -118,7 +123,7 @@ jobs:
             echo
             echo "=== ENV (SORTED) ==="
             env | sort || true
-          } | tee .ci-logs/system-info.txt
+          } | tee -a .ci-logs/system-info.txt
 
       - name: Verify expected platform constraints
         shell: bash
