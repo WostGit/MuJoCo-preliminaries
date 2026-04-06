@@ -477,6 +477,48 @@ jobs:
           print("Portable dependency import sanity passed.")
           PY
 
+      - name: MLX benchmark with repeated runs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mlx-benchmark.txt
+          import time
+          import json
+          import statistics
+          import mlx.core as mx
+
+          n = 2048
+          a = mx.random.normal((n, n))
+          b = mx.random.normal((n, n))
+
+          warm = a @ b
+          mx.eval(warm)
+
+          times = []
+          for _ in range(5):
+              t0 = time.time()
+              c = a @ b
+              mx.eval(c)
+              t1 = time.time()
+              times.append(t1 - t0)
+
+          report = {
+              "shape": [n, n],
+              "runs": times,
+              "min_sec": min(times),
+              "max_sec": max(times),
+              "avg_sec": statistics.mean(times),
+          }
+
+          print(json.dumps(report, indent=2))
+
+          with open(".ci-logs/mlx-benchmark.json", "w") as f:
+              json.dump(report, f, indent=2)
+
+          if report["avg_sec"] > 1.5:
+              raise SystemExit(f"MLX benchmark slower than expected: {report['avg_sec']:.4f}s")
+          PY
+
       - name: Attempt MLX install on Ubuntu as expected-negative diagnostic
         shell: bash
         continue-on-error: true
