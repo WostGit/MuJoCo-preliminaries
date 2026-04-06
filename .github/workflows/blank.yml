@@ -1,0 +1,501 @@
+name: MLX / MuJoCo preliminaries (ultra verbose with fallback)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  primary-macos:
+    name: Primary checks on macOS Apple Silicon
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create log directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .ci-logs
+          echo "Created .ci-logs"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Print high-level workflow context
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "=== WORKFLOW CONTEXT ==="
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Ref: $GITHUB_REF"
+            echo "SHA: $GITHUB_SHA"
+            echo "Actor: $GITHUB_ACTOR"
+            echo "Event: $GITHUB_EVENT_NAME"
+            echo "Run ID: $GITHUB_RUN_ID"
+            echo "Run Number: $GITHUB_RUN_NUMBER"
+            echo "Job: $GITHUB_JOB"
+            echo "Runner OS: $RUNNER_OS"
+            echo "Runner Arch: $RUNNER_ARCH"
+            echo "Workspace: $GITHUB_WORKSPACE"
+            echo "Python Version (matrix): ${{ matrix.python-version }}"
+          } | tee .ci-logs/context.txt
+
+      - name: Print system information
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "=== BASIC SYSTEM INFO ==="
+            uname -a || true
+            echo
+            echo "=== macOS VERSION ==="
+            sw_vers || true
+            echo
+            echo "=== ARCH ==="
+            arch || true
+            uname -m || true
+            echo
+            echo "=== PYTHON ==="
+            which python || true
+            python -V || true
+            python -c "import sys; print(sys.version)" || true
+            echo
+            echo "=== PIP ==="
+            which pip || true
+            python -m pip --version || true
+            echo
+            echo "=== PLATFORM DETAILS ==="
+            python - <<'PY'
+            import os
+            import platform
+            import sys
+
+            print("platform.platform() =", platform.platform())
+            print("platform.machine()  =", platform.machine())
+            print("platform.processor()=", platform.processor())
+            print("platform.system()   =", platform.system())
+            print("platform.release()  =", platform.release())
+            print("sys.version         =", sys.version)
+            print("sys.executable      =", sys.executable)
+            print("cwd                 =", os.getcwd())
+            PY
+            echo
+            echo "=== HARDWARE INFO ==="
+            system_profiler SPHardwareDataType || true
+            echo
+            echo "=== CPU BRAND ==="
+            sysctl -n machdep.cpu.brand_string || true
+            echo
+            echo "=== MEMORY INFO ==="
+            vm_stat || true
+            echo
+            echo "=== DISK INFO ==="
+            df -h || true
+            echo
+            echo "=== ENV (SORTED) ==="
+            env | sort || true
+          } | tee .ci-logs/system-info.txt
+
+      - name: Verify expected platform constraints
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import platform
+          import subprocess
+          import sys
+
+          errors = []
+
+          machine = platform.machine().lower()
+          if machine not in ("arm64", "aarch64"):
+              errors.append(f"Expected Apple Silicon arm64, got {machine}")
+
+          version = subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip()
+          major = int(version.split(".")[0])
+          if major < 14:
+              errors.append(f"Expected macOS 14+, got {version}")
+
+          if sys.version_info < (3, 10):
+              errors.append(f"Expected Python 3.10+, got {sys.version}")
+
+          print("machine:", machine)
+          print("macOS:", version)
+          print("python:", sys.version)
+
+          if errors:
+              print("Platform constraint failures:")
+              for item in errors:
+                  print("-", item)
+              raise SystemExit(1)
+
+          print("All platform constraints passed.")
+          PY
+
+      - name: Upgrade packaging tooling
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip setuptools wheel | tee .ci-logs/pip-upgrade.txt
+          python -m pip list | tee .ci-logs/pip-list-after-upgrade.txt
+
+      - name: Install NumPy first
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install numpy | tee .ci-logs/install-numpy.txt
+
+      - name: Install SciPy separately
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install scipy | tee .ci-logs/install-scipy.txt
+
+      - name: Install MuJoCo separately
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install mujoco | tee .ci-logs/install-mujoco.txt
+
+      - name: Install MLX with primary strategy
+        id: mlx_primary_install
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          python -m pip install mlx | tee .ci-logs/install-mlx-primary.txt
+
+      - name: Install MLX with fallback strategy
+        if: steps.mlx_primary_install.outcome != 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "Primary MLX install failed; trying fallback strategy" | tee .ci-logs/install-mlx-fallback.txt
+          python -m pip cache purge || true
+          python -m pip install --no-cache-dir --upgrade mlx 2>&1 | tee -a .ci-logs/install-mlx-fallback.txt
+
+      - name: Freeze installed packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip list | tee .ci-logs/pip-list-final.txt
+          python -m pip freeze | tee .ci-logs/pip-freeze-final.txt
+
+      - name: Import sanity check for all preliminaries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/import-sanity.txt
+          import sys
+          import platform
+
+          print("=== IMPORT SANITY ===")
+          print("Python:", sys.version)
+          print("Machine:", platform.machine())
+
+          import numpy as np
+          print("NumPy version:", np.__version__)
+
+          import scipy
+          print("SciPy version:", scipy.__version__)
+
+          import mujoco
+          print("MuJoCo version:", mujoco.__version__)
+
+          import mlx.core as mx
+          print("MLX imported successfully")
+
+          print("All required imports passed.")
+          PY
+
+      - name: Detailed MLX environment probe
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mlx-probe.txt
+          import mlx.core as mx
+          import numpy as np
+
+          print("=== MLX PROBE ===")
+          a = mx.array([1.0, 2.0, 3.0])
+          b = mx.array([4.0, 5.0, 6.0])
+          c = a + b
+          mx.eval(c)
+          print("Vector add result:", np.array(c))
+
+          m1 = mx.arange(16, dtype=mx.float32).reshape(4, 4)
+          m2 = mx.arange(16, dtype=mx.float32).reshape(4, 4)
+          mm = m1 @ m2
+          mx.eval(mm)
+          print("Matmul result shape:", mm.shape)
+          print("Matmul sample:", np.array(mm))
+
+          print("MLX probe complete.")
+          PY
+
+      - name: MLX compute smoke test with timing
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mlx-compute-smoke.txt
+          import time
+          import mlx.core as mx
+
+          print("=== MLX COMPUTE SMOKE TEST ===")
+          n = 2048
+          print(f"Building matrices of shape ({n}, {n})")
+
+          a = mx.random.normal((n, n))
+          b = mx.random.normal((n, n))
+
+          t0 = time.time()
+          c = a @ b
+          mx.eval(c)
+          t1 = time.time()
+
+          print("Computation finished successfully")
+          print("Output shape:", c.shape)
+          print("Elapsed seconds:", round(t1 - t0, 6))
+          PY
+
+      - name: NumPy and SciPy numeric sanity test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/scipy-numpy-sanity.txt
+          import numpy as np
+          from scipy.linalg import svd
+
+          print("=== NUMPY / SCIPY SANITY ===")
+          x = np.array([[1.0, 2.0], [3.0, 4.0]])
+          u, s, vt = svd(x)
+          print("Input matrix:")
+          print(x)
+          print("Singular values:")
+          print(s)
+          print("Sanity test passed.")
+          PY
+
+      - name: MuJoCo import and XML parse smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mujoco-xml-smoke.txt
+          import mujoco
+
+          print("=== MUJOCO XML PARSE TEST ===")
+          xml = """
+          <mujoco>
+            <worldbody>
+              <geom type="plane" size="1 1 0.1"/>
+              <body name="box" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="box" size="0.05 0.05 0.05"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """
+
+          model = mujoco.MjModel.from_xml_string(xml)
+          data = mujoco.MjData(model)
+
+          print("Model nq:", model.nq)
+          print("Model nv:", model.nv)
+          print("Initial time:", data.time)
+          print("MuJoCo XML parse test passed.")
+          PY
+
+      - name: MuJoCo stepping smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/mujoco-step-smoke.txt
+          import mujoco
+
+          print("=== MUJOCO STEP TEST ===")
+          xml = """
+          <mujoco>
+            <option timestep="0.002"/>
+            <worldbody>
+              <geom type="plane" size="2 2 0.1"/>
+              <body name="box" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """
+
+          model = mujoco.MjModel.from_xml_string(xml)
+          data = mujoco.MjData(model)
+
+          for i in range(100):
+              mujoco.mj_step(model, data)
+
+          print("Stepping complete.")
+          print("Simulation time:", data.time)
+          print("Final qpos:", data.qpos)
+          print("MuJoCo stepping smoke test passed.")
+          PY
+
+      - name: Write success summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Primary macOS job succeeded"
+            echo
+            echo "- Runner: macOS 14"
+            echo "- Architecture: Apple Silicon ARM64"
+            echo "- Python: ${{ matrix.python-version }}"
+            echo "- Checks passed: platform, imports, MLX smoke test, NumPy/SciPy sanity, MuJoCo smoke tests"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write failure summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## Primary macOS job failed"
+            echo
+            echo "See uploaded logs for detailed diagnostics."
+            echo
+            echo "Useful artifacts:"
+            echo "- .ci-logs/system-info.txt"
+            echo "- .ci-logs/install-mlx-primary.txt"
+            echo "- .ci-logs/install-mlx-fallback.txt"
+            echo "- .ci-logs/import-sanity.txt"
+            echo "- .ci-logs/mlx-compute-smoke.txt"
+            echo "- .ci-logs/mujoco-step-smoke.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload primary logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: primary-macos-logs-py${{ matrix.python-version }}
+          path: .ci-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  fallback-linux-diagnostics:
+    name: Fallback diagnostics on Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: primary-macos
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create log directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .ci-logs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Print Ubuntu diagnostic context
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "=== FALLBACK UBUNTU DIAGNOSTICS ==="
+            echo "This job does not replace Apple Silicon MLX validation."
+            echo "It exists to provide fallback logs, packaging checks, and basic dependency diagnostics."
+            echo
+            echo "Runner OS: $RUNNER_OS"
+            echo "Runner Arch: $RUNNER_ARCH"
+            uname -a || true
+            python -V || true
+            python -m pip --version || true
+            lsb_release -a || true
+            df -h || true
+            free -h || true
+          } | tee .ci-logs/ubuntu-context.txt
+
+      - name: Upgrade packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip setuptools wheel | tee .ci-logs/ubuntu-pip-upgrade.txt
+
+      - name: Install portable preliminaries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install numpy scipy mujoco | tee .ci-logs/ubuntu-install-portable.txt
+
+      - name: Portable import sanity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee .ci-logs/ubuntu-import-sanity.txt
+          import sys
+          import numpy as np
+          import scipy
+          import mujoco
+
+          print("Python:", sys.version)
+          print("NumPy version:", np.__version__)
+          print("SciPy version:", scipy.__version__)
+          print("MuJoCo version:", mujoco.__version__)
+          print("Portable dependency import sanity passed.")
+          PY
+
+      - name: Attempt MLX install on Ubuntu as expected-negative diagnostic
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          python -m pip install mlx 2>&1 | tee .ci-logs/ubuntu-mlx-attempt.txt
+
+      - name: Write fallback summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Fallback Ubuntu diagnostics completed"
+            echo
+            echo "- This job is diagnostic only"
+            echo "- It validates portable pieces like Python packaging, NumPy, SciPy, and MuJoCo"
+            echo "- MLX is expected to require Apple Silicon + macOS 14+"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fallback logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fallback-ubuntu-logs
+          path: .ci-logs/
+          if-no-files-found: warn
+          retention-days: 14
